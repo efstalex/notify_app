@@ -1,39 +1,50 @@
+
 import streamlit as st
 import pandas as pd
-import numpy as np
-import time
+import sqlite3
 
 st.title("📊 Dashboard")
-st.caption("A tiny example demonstrating state, tabs, and charts.")
+st.caption("Overview of reminders and activity.")
 
-# Generate demo data (or cache your own data load here)
-@st.cache_data
-def load_data(n=100):
-    ts = pd.date_range("2024-01-01", periods=n, freq="D")
-    values = np.random.randn(n).cumsum()
-    return pd.DataFrame({"date": ts, "value": values})
+@st.cache_resource
+def get_conn():
+    return sqlite3.connect("notify.db", check_same_thread=False)
 
-df = load_data()
+def load_df(conn, include_sent=True):
+    q = "SELECT id, title, message, due_utc, created_utc, channel, status FROM reminders ORDER BY datetime(due_utc) ASC"
+    rows = conn.execute(q).fetchall()
+    df = pd.DataFrame(rows, columns=["id","title","message","due_utc","created_utc","channel","status"])
+    if df.empty:
+        return df
+    df["due_utc"] = pd.to_datetime(df["due_utc"], utc=True)
+    df["created_utc"] = pd.to_datetime(df["created_utc"], utc=True)
+    df["due_local"] = df["due_utc"].dt.tz_convert("Europe/Athens").dt.tz_localize(None)
+    df["created_local"] = df["created_utc"].dt.tz_convert("Europe/Athens").dt.tz_localize(None)
+    if not include_sent:
+        df = df[df["status"] != "sent"]
+    return df
 
-tab1, tab2 = st.tabs(["Overview", "Details"])
+conn = get_conn()
+df = load_df(conn, include_sent=True)
 
-with tab1:
-    st.subheader("Trend")
-    st.line_chart(df.set_index("date"))
+if df.empty:
+    st.info("No data yet — create reminders on the Home page.")
+else:
+    total = len(df)
+    pending = int((df["status"]=="pending").sum())
+    sent = int((df["status"]=="sent").sum())
+    email_ct = int((df["channel"]=="email").sum())
+    inapp_ct = int((df["channel"]=="in-app").sum())
+    c1,c2,c3,c4,c5 = st.columns(5)
+    c1.metric("Total", total)
+    c2.metric("Pending", pending)
+    c3.metric("Sent", sent)
+    c4.metric("Email", email_ct)
+    c5.metric("In-app", inapp_ct)
 
-    st.subheader("KPIs")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Latest value", f"{df['value'].iloc[-1]:.2f}")
-    col2.metric("Mean", f"{df['value'].mean():.2f}")
-    col3.metric("Std dev", f"{df['value'].std():.2f}")
+    st.divider()
+    st.subheader("Timeline (local time)")
+    st.line_chart(df.set_index("due_local")[["id"]].rename(columns={"id":"reminders"}))
 
-with tab2:
-    st.subheader("Raw Data")
-    st.dataframe(df, use_container_width=True)
-    with st.expander("Simulate a long task"):
-        if st.button("Run task"):
-            with st.status("Working...", expanded=True) as status:
-                for i in range(5):
-                    time.sleep(0.4)
-                    st.write(f"Step {i+1}/5 complete")
-                status.update(label="Done!", state="complete", expanded=False)
+    st.subheader("All reminders")
+    st.dataframe(df[["id","title","due_local","channel","status","message"]], use_container_width=True)
